@@ -1,0 +1,143 @@
+import streamlit as st
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import confusion_matrix, classification_report, roc_auc_score, roc_curve
+from tensorflow.keras.models import Sequential, Model
+from tensorflow.keras.layers import Dense, Input
+
+# Configure the Streamlit app
+st.set_page_config(page_title="Détection de Fraude Bancaire", layout="wide", page_icon="💳")
+
+# Style personnalisé
+st.markdown("""
+    <style>
+    h1, h2, h3 {
+        color: #1bcbdf !important;
+    }
+    </style>
+""", unsafe_allow_html=True)
+
+# ----------- Fonctions -----------
+
+def load_data(uploaded_file):
+    if uploaded_file is not None:
+        try:
+            data = pd.read_csv(uploaded_file)
+            st.success(" ✅ Données chargées avec succès !")
+            return data
+        except Exception as e:
+            st.error(f"Erreur de chargement : {e}")
+    return None
+
+def show_data_info(data):
+    st.subheader(" Aperçu des données")
+    st.dataframe(data.head())
+
+    st.subheader(" Distribution de la variable Amount")
+    fig1, ax1 = plt.subplots()
+    sns.histplot(data['Amount'], bins=50, kde=True, ax=ax1)
+    st.pyplot(fig1)
+
+    st.subheader(" Distribution des classes (fraude vs non-fraude)")
+    st.bar_chart(data['Class'].value_counts())
+
+def preprocess_data(data):
+    st.info("Prétraitement des données...")
+    X = data.drop('Class', axis=1)
+    y = data['Class']
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, stratify=y, random_state=42)
+    scaler = StandardScaler()
+    X_train_scaled = scaler.fit_transform(X_train)
+    X_test_scaled = scaler.transform(X_test)
+    return X_train_scaled, X_test_scaled, y_train, y_test, X_test
+
+def train_mlp(X_train, y_train):
+    model = Sequential([
+        Dense(32, activation='relu', input_shape=(X_train.shape[1],)),
+        Dense(16, activation='relu'),
+        Dense(1, activation='sigmoid')
+    ])
+    model.compile(optimizer='adam', loss='binary_crossentropy', metrics=['accuracy'])
+    model.fit(X_train, y_train, epochs=10, batch_size=32, verbose=0)
+    return model
+
+def train_autoencoder(X_train):
+    input_dim = X_train.shape[1]
+    input_layer = Input(shape=(input_dim,))
+    encoded = Dense(16, activation='relu')(input_layer)
+    encoded = Dense(8, activation='relu')(encoded)
+    decoded = Dense(16, activation='relu')(encoded)
+    output_layer = Dense(input_dim, activation='linear')(decoded)
+    autoencoder = Model(inputs=input_layer, outputs=output_layer)
+    autoencoder.compile(optimizer='adam', loss='mse')
+    autoencoder.fit(X_train, X_train, epochs=10, batch_size=32, verbose=0)
+    return autoencoder
+
+def display_results(y_true, y_pred, y_score, model_type, X_test_raw):
+    st.success(f"✅ Résultats du modèle {model_type}")
+
+    st.subheader("Rapport de classification")
+    st.text(classification_report(y_true, y_pred))
+
+    st.subheader("Matrice de confusion")
+    fig, ax = plt.subplots()
+    sns.heatmap(confusion_matrix(y_true, y_pred), annot=True, fmt='d', cmap='Blues', ax=ax)
+    st.pyplot(fig)
+
+    st.subheader("Courbe ROC")
+    fpr, tpr, _ = roc_curve(y_true, y_score)
+    fig2, ax2 = plt.subplots()
+    ax2.plot(fpr, tpr, label='ROC')
+    ax2.plot([0, 1], [0, 1], linestyle='--', color='gray')
+    ax2.set_xlabel('Taux de faux positifs')
+    ax2.set_ylabel('Taux de vrais positifs')
+    ax2.set_title("ROC Curve")
+    st.pyplot(fig2)
+
+    st.subheader("Résumé des prédictions")
+    result_df = X_test_raw.copy()
+    result_df['Réel'] = y_true.values
+    result_df['Prédit'] = y_pred
+    st.dataframe(result_df.head(10))
+
+# ----------- Interface principale -----------
+
+def main():
+    st.title("💳 Détection de Fraude Bancaire par Deep Learning :Une Approche KDD avec Keras")
+    st.markdown("Ce projet utilise deux modèles : MLP supervisé et Autoencodeur non supervisé.")
+
+    with st.sidebar:
+        st.header("📂 Chargement & Options")
+        uploaded_file = st.file_uploader("Importer un fichier CSV", type=["csv"])
+        model_option = st.selectbox("Modèle de prédiction :", ["MLP", "Autoencodeur"])
+        start_training = st.button("Lancer la détection")
+
+    data = load_data(uploaded_file)
+
+    if data is not None:
+        show_data_info(data)
+
+        if start_training:
+            X_train, X_test, y_train, y_test, X_test_raw = preprocess_data(data)
+
+            with st.spinner("🔄 Entraînement et prédiction en cours..."):
+                if model_option == "MLP":
+                    model = train_mlp(X_train, y_train)
+                    preds = model.predict(X_test).flatten()
+                    preds_binary = (preds > 0.5).astype(int)
+                    display_results(y_test, preds_binary, preds, "MLP", pd.DataFrame(X_test_raw))
+
+                elif model_option == "Autoencodeur":
+                    model = train_autoencoder(X_train)
+                    X_test_pred = model.predict(X_test)
+                    reconstruction_error = np.mean(np.square(X_test - X_test_pred), axis=1)
+                    threshold = np.percentile(reconstruction_error, 95)
+                    preds_binary = (reconstruction_error > threshold).astype(int)
+                    display_results(y_test, preds_binary, reconstruction_error, "Autoencodeur", pd.DataFrame(X_test_raw))
+
+if __name__ == "__main__":
+    main()
